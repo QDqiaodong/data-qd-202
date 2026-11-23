@@ -1,6 +1,6 @@
 # data-qd-202 · 晶体分数坐标与位点展开
 
-验证显式有限仿射操作集合的闭包，展开规范分数坐标；同源特殊位置去重，不同源占位合并并核防超占位，输出晶胞组成和位点来源。
+验证显式有限仿射操作集合的闭包，展开规范分数坐标；同源特殊位置去重，不同源占位合并并核防超占位，输出晶胞组成和位点来源。在此之上提供超胞分片生成与离线拼接：按新基底把超胞切成胞片分别交付，接收方不持有原胞输入即可合并分片、配对跨片有向连接，齐全后交付完整周期结构。
 
 本仓主要交付为Python业务API与下游可消费的数据，不以通用CLI、报表或后台模板为产品。可观察字段、单位、身份、上限及失败边界见 [数据契约](docs/contract.md)。
 
@@ -31,6 +31,18 @@ result = process(load("fixtures/input.json"))
 publish("run/another-sample.json", result)
 ```
 
+超胞分片与离线拼接（字段、配对与 finalize 条件见 [数据契约](docs/contract.md)）：
+
+```python
+from site_orbits import assemble_supercell_shards, build_supercell_shard
+
+shard = build_supercell_shard(data, basis, links, [[0, 0, 0]])      # 生成单个胞片包
+opened = assemble_supercell_shards([shard])                          # 开放分片，可继续拼
+final = assemble_supercell_shards(received_shards, finalize=True)    # 齐全后交付完整结构
+```
+
+离线例子 `examples/run_supercell.py` 把两个胞片包经 JSON 写盘再读回，先拼开放分片再 finalize，产物写入临时目录并打印路径。
+
 恒等和反演操作展开2个源位点得到3个位置，组成X=1、Y=1；原点特殊位点占位只计一次。
 
 安装后的样例摘要：
@@ -39,7 +51,7 @@ publish("run/another-sample.json", result)
 {"contributions": 3, "expanded_positions": 3, "operations": 2, "source_sites": 2}
 ```
 
-已通过 6 项业务测试，另实际核对已有目标、符号链接目标、JSON重复键、非法业务输入和临时发布文件清理。数值和排序语义见契约，不以文件哈希代替业务结果断言。
+已通过 24 项业务测试（含超胞分片生成、离线拼接、分阶段合并与篡改拒绝），另实际核对已有目标、符号链接目标、JSON重复键、非法业务输入和临时发布文件清理。数值和排序语义见契约，不以文件哈希代替业务结果断言。
 
 ## 当前边界与来源
 
