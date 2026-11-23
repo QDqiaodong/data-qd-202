@@ -40,3 +40,55 @@ build_supercell_shard(data, basis, links, cells) 在 process 的原胞展开语�
 - 普通拼接可只覆盖一部分，结果仍是同格式的包，可与后续分片继续拼接。
 - finalize=True 只允许在覆盖基底行列式所代表的全部互异胞片且没有未配边界记录时返回完整周期结构，否则 ValueError；能拼出开放分片不等于能交付完整周期结构。
 - 处理量与包大小不随未选中的胞片数或平行六面体的外接整数盒增长。
+
+# 本地语料发行与同源证据
+
+`Corpus(path)` 打开（必要时创建）一个本地语料库文件，调用方持有路径，进程退出后可用同一路径重新打开。接口全部走 `ValueError` 子类 `CorpusError`；分折冲突另抛其子类 `FoldConflict`，异常属性 `conflicts` 给出冲突详情。布尔值不当作整数或 ID 接受。单写者语义：同一写入者进程内串行调用即可，不提供网络或多进程合并。
+
+```python
+from site_orbits import Corpus
+with Corpus('corpus.db') as db:
+    db.apply_batch({...})            # 样本、证据、撤回
+    receipt = db.release('R', {'A': 'train', 'C': 'test'})
+    manifest = db.fetch('R')          # 当前可取用清单
+    audit = db.audit('R')             # 原清单 + 发行/撤下修订号
+```
+
+## 样本与几何等价
+
+样本 ID 为既有 ID 字符规则内的唯一字符串；`data` 直接交给 `process(data)`，沿用其字段、展开、去重、占位合并和超占位/不闭合校验，不另设输入格式。每库最多 300 个样本，每样本最多 48 个展开位点；超限拒绝整批，不裁剪。
+
+几何等价只看展开位点：把每点的来源贡献按物种相加得到精确占位向量，忽略源位点 ID、操作 ID、同物种占位拆写与输入顺序；存在同一个三维分数平移使两样本位点集合模 1 后逐点相同且对应点占位向量相同，即判等价。不忽略每点物种或占位，不用浮点容差，不把旋转、换轴、缩放、总组成相同或无连接当作等价，也不读晶格度量。
+
+## 批次
+
+`apply_batch(batch)` 接受对象，字段 `samples`、`evidence`、`retract` 均可省略，各自为数组：
+
+- `samples: [{"id": 样本ID, "data": process输入}]`
+- `evidence: [{"id": 证据ID, "a": 样本ID, "b": 样本ID}]`，两个端点必须不同；不同证据可指向同一对样本。
+- `retract: [证据ID]`，只能撤回批前仍有效的证据；撤回只关闭该 ID，不删样本、不影响其他 ID、不取消几何等价。
+
+成功批次返回 `{"revision": 新证据修订号, "samples": [...], "evidence": [...], "retracted": [...], "withdrawn": [...已撤下发行ID...]}`。修订号从空库的 0 起每成功批次加一。批次原子生效：空批、重复新 ID、样本 ID 已登记、证据 ID 已用过（一经分配不得复用）、悬空端点、撤回同批新证据或撤回无效证据、样本内容非法、任一上限超出，整批不生效；发行判断只用提交后的完整批次，不看中间态。同一批的新证据可引用同批新样本。
+
+## 发行
+
+`release(release_id, mapping)`：`release_id` 为唯一 ID；`mapping` 是非空映射，键为样本 ID、值为 `train`/`validation`/`test`，可用 `dict` 或 `[样本ID, 折]` 对列表，输入顺序不计。拒绝未知样本、重复样本、非法折、空映射。
+
+判定：全库当前有效同源证据与几何等价合并为连通关系，连接路径可穿过本次未选中的样本；候选映射中同一连通组内被选中的样本必须同折。跨折则抛 `FoldConflict`，其 `conflicts[0]` 至少含 `source`、`target` 及完整 `steps` 证据链：每步 `{"from", "to", "kind"}`，几何步 `kind="geometry"` 并带精确分数平移 `translation`，同源步 `kind="evidence"` 并带证据 ID `evidence`。不自动移动折、不删样本、不以组号代替证据链。
+
+成功发行返回回执并固定清单。回执字段：`format="corpus-receipt/1"`、`release_id`、`evidence_revision`（发行时修订号）、`sample_count`、`fold_counts`、`manifest_digest`（清单规范 JSON 的 sha256）。回执只证明曾经成功发行，不含可直接供训练读取的清单；清单由取用入口返回。
+
+同一 `release_id` 配同一映射（忽略顺序）重试，一律先返回原回执，即使当前修订号或发行状态已变、原请求已不合规；不重查旧请求、不另写清单。同一 ID 配不同映射报错。失败发行不占用 ID。
+
+## 取用、撤下与审计
+
+- `fetch(release_id)` 返回该发行当前清单，格式 `corpus-manifest/1`：`release_id`、`evidence_revision`、`samples`（按样本 ID 升序，每项含 `sample`、`fold` 与展开位点 `positions`，来源贡献完整保留）。未知或已撤下的发行报错。
+- 每次成功批次写入时，若某份仍可取用清单在新修订下首次出现跨折，该次提交在同一事务中把它撤下，并记录首次撤下修订号和**当时**的完整冲突证据链（含中间样本）；不影响未跨折的发行，即使其组扩张或合并。已撤下不能经 `fetch` 读取，后续证据撤回也不自动恢复；可用新发行 ID 提交现在合规分折。
+- `audit(release_id)` 始终返回：`release_id`、`status`（`available`/`withdrawn`）、`receipt`、`manifest`（原清单）、`released_revision`、`withdrawn_revision`、`conflicts`（首次撤下依据或 null）。证据后来失效不改写撤下记录。不要求收回下游已取副本。
+- 上限：每库最多 300 样本、2000 条累计证据 ID、100 次成功发行；超限拒绝。
+
+## 持久化与重开
+
+存储为单文件 SQLite（标准库），`meta`、`samples`、`evidence`、`releases` 四表。样本原样保存 `process` 展开结果与几何指纹；证据行、修订号、清单、回执和撤下记录在同一 `BEGIN IMMEDIATE` 事务内提交，提交前中断则回滚，未提交写入不可见。重新打开后不会出现“证据已提交但仍读到应撤下清单”或“有回执却无原清单”：证据修订号与撤下、回执与清单一起可见。提交后、调用方收到回执前中断的发行，按同 ID 重试规则返回已落下的一份回执与清单。
+
+清单与回执均为排序确定的 JSON（`sort_keys=True`、紧凑分隔），可按字节序列化比较。

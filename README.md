@@ -31,6 +31,21 @@ result = process(load("fixtures/input.json"))
 publish("run/another-sample.json", result)
 ```
 
+本地语料发行与同源证据（字段、错误、撤下与重开语义见 [数据契约](docs/contract.md)）：
+
+```python
+from site_orbits import Corpus, FoldConflict
+
+with Corpus('corpus.db') as db:
+    db.apply_batch({'samples': [{'id': 'A', 'data': data_a}, ...]})
+    db.release('R', {'A': 'train', 'C': 'test'})    # 跨折抛 FoldConflict
+    db.apply_batch({'evidence': [{'id': 'E1', 'a': 'A', 'b': 'D'}, ...]})
+    db.fetch('R')                                    # 跨折清单已撤下，报错
+    db.audit('R')                                    # 原清单、修订号与首次撤下链
+```
+
+几何等价只差三维分数平移；同源证据与几何等价共同约束分折，但不自动调整折映射。离线例子 `examples/run_corpus.py` 演示 A/B 同折保留来源、跨折拒绝、证据批次撤下与审计。
+
 超胞分片与离线拼接（字段、配对与 finalize 条件见 [数据契约](docs/contract.md)）：
 
 ```python
@@ -51,7 +66,7 @@ final = assemble_supercell_shards(received_shards, finalize=True)    # 齐全后
 {"contributions": 3, "expanded_positions": 3, "operations": 2, "source_sites": 2}
 ```
 
-已通过 24 项业务测试（含超胞分片生成、离线拼接、分阶段合并与篡改拒绝），另实际核对已有目标、符号链接目标、JSON重复键、非法业务输入和临时发布文件清理。数值和排序语义见契约，不以文件哈希代替业务结果断言。
+已通过 47 项业务测试（含超胞分片生成、离线拼接、分阶段合并与篡改拒绝，几何等价与浮点/旋转/缩放反例，分折拒绝链、批次原子性、上限、撤下与审计，以及用真实子进程 os._exit 在提交前后中断并重开核对的发行与批次边界），另实际核对已有目标、符号链接目标、JSON重复键、非法业务输入和临时发布文件清理。数值和排序语义见契约，不以文件哈希代替业务结果断言。
 
 ## 当前边界与来源
 
