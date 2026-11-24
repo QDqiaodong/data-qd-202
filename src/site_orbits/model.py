@@ -1,8 +1,8 @@
 from .checks import fields,array,integer,ident,unique,fraction
 from .affine import key,determinant,compose,IDENTITY
 
-def parse(data):
-    fields(data,('operations','sites'));operations=[];sites=[]
+def parse_operations(data):
+    operations=[]
     for o in array(data['operations'],1,24):
         fields(o,('id','matrix','translation'));name=ident(o['id'])
         m=tuple(tuple(integer(v,-2,2) for v in array(row,3,3)) for row in array(o['matrix'],3,3))
@@ -13,6 +13,10 @@ def parse(data):
     for _,a in operations:
         for _,b in operations:
             if compose(a,b) not in keys:raise ValueError('operation set is not closed')
+    return operations
+
+def parse(data):
+    fields(data,('operations','sites'));operations=parse_operations(data);sites=[]
     for s in array(data['sites'],1,200):
         fields(s,('id','species','point','occupancy'));name=ident(s['id']);species=ident(s['species'])
         p=tuple(fraction(v)%1 for v in array(s['point'],3,3));occ=fraction(s['occupancy'],True)

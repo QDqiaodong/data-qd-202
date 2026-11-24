@@ -12,6 +12,36 @@ sites为1..200个唯一id，含species ASCII标记、point三个有理坐标、o
 
 输入严格字段校验；错误抛ValueError，无部分结果。io.publish只创建目标文件，已有目标和链接均不覆盖。固定example调用API，无通用CLI产品。
 
+# 占位区间草稿与确值结构交付
+
+solve_draft(data, delivery=None) 在 process 的操作/位点语义之上处理占位区间草稿：求出全晶胞约束下每条来源的精确单位范围；给出 delivery 分组请求时，判定能否交付一份可直接传给 process 的确值结构。全部离线、精确整数算术，不枚举可行分配，处理量不随刻度 K 的数值铺开。输入错误抛 ValueError；不修改调用方传入的数据。
+
+## 草稿格式
+
+- scale：整数刻度 K，1..10⁹（布尔值拒绝）。来源 s 分到 u_s 个单位时，其轨道每个点的占位都是 u_s/(mK)，m 为该轨道的互异展开点数。
+- operations：与 process 相同的显式仿射操作、合法性、闭包与坐标语义。
+- sites：1..200 条来源，字段 id/species/point 同 process；标量占位换成 units：[下界, 上界] 非空闭整数区间，端点 1..mK（mK 为该来源轨道的互异展开点数乘 K，展开与轨道划分沿用 process 语义：完整展开坐标集合相同即同轨道，同一点由多个操作产生只贡献一次）。所有来源都保留，不把缺测来源默认丢掉。
+- orbit_observations：可选数组，每项 {"site": 成员来源ID, "units": [下界, 上界]}，约束该轨道全部来源单位之和；端点为 0..mK 的整数。引用同一轨道两次（即使经不同成员 ID）算重复，拒绝；未知来源拒绝。未列出的轨道仍受容量限制：来源单位之和最多为 mK。
+- species_observations：可选数组，每项 {"species": 物种标签, "units": [下界, 上界]}，约束该物种的晶胞单位总数（该物种各来源单位之和）；端点为 0..K·M 的整数，M 为全草稿互异展开点数。同一物种重复声明、未知物种拒绝；未列出的物种无额外限制。
+- 所有端点必须是整数，布尔值、浮点、字符串均拒绝；未知字段、空区间、越界端点均抛 ValueError。
+
+## 求解结果
+
+可行分配必须同时满足全草稿的所有区间与容量。响应 format 为 "occupancy-draft/1"：
+
+- 无解（格式合法但约束矛盾）：{"format", "status": "infeasible"}，不输出范围或结构。
+- 可行：status="feasible"，附 scale、cell_points（M）、orbits（按最小成员 ID 排序：index/multiplicity/sites）与 sources（按 ID 排序：id/species/orbit/units=[最小, 最大]）。每个来源的最小、最大单位数分别在某个完整可行分配中确实能达到，不是输入区间、局部估计或对单个示例的描述；两个端点不保证能彼此同时取到。
+
+## 交付请求与结果
+
+delivery 为 {"groups": [...]}（至少一组）；每组 {"members": [来源ID...], "representative": 组内来源ID}。交付可只选一部分轨道，但求解始终使用包括未选轨道在内的全部草稿与观测。对每个被选中的轨道，其全部来源必须被划分成互不重叠的非空组；同组只能收同物种且同轨道的来源。未知成员、重复归组、遗漏同轨道来源、跨物种或跨轨道合组、代表不在组内，均抛 ValueError，不默默调整划分。
+
+- 对每组计算所有完整可行分配下组内单位和的实际最小、最大值（不按成员独立上下界分别相加）。交付的必要条件：每组单位和固定，且换成每点占位（固定值/(mK)）、约为最简分数后落在 process 有理数格式内（分子、分母 1..100000）；即使固定，超出旧格式范围也不舍入、不放宽旧接口。
+- 满足条件时 delivery.status="delivered"：structure 为可直接传给 process 的完整输入（沿用原操作；每组只保留代表来源的 ID、坐标、物种，以固定的组占位替代区间）；groups 逐组给出 representative→members 映射、固定 units 与 occupancy，不让合并隐没来源。旧入口展开后，每个选中坐标上各物种的占位与任一原始可行分配在该坐标上的物种总占位一致，且不产生未选轨道的点。交付的是用户明确批准的投影，不是把未确定的原稿改写成唯一解。
+- 任一组不固定或固定值超出旧格式时 delivery.status="blocked"，不给部分结构：blocking 逐组给出 representative/members/orbit/species、精确范围 units、原因（"not_fixed" 或 "occupancy_unrepresentable"，后者附约为最简分数的 occupancy）以及 witnesses——min/max 两个端点各自的一份完整可行分配（含未选中轨道的全部来源单位），可独立复算该组的端点总量。草稿可行而拒绝交付时，来源范围仍在 sources 中给出。
+
+正常响应均可经 JSON 往返；同一输入仅重排操作、来源、观测、组或成员时，响应相同。
+
 # 超胞分片与离线拼接
 
 build_supercell_shard(data, basis, links, cells) 在 process 的原胞展开语义之上生成超胞分片包；assemble_supercell_shards(shards, finalize=False) 在接收端离线合并分片，不接受也不依赖原胞输入、原始路径、全胞清单或进程缓存。两处失败均抛ValueError，不修改调用方传入的数据，不返回半成品。
