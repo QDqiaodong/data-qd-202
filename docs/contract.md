@@ -101,6 +101,46 @@ extract_supercell_groups(package, repeats, requests, reserves=None, quota=None) 
 
 保留组含 requests/status/reserves；超额组含 requests/status。结果可经 JSON 往返；包内记录与保留标记重排不改变结果，请求顺序具有业务含义。
 
+# 周期迁移轨迹定位校准与时间窗交接
+
+`handoff_windows(package, trajectory, windows)` 在 finalize 验收的超胞包（supercell-shard/1）之上解释一份压缩迁移轨迹，按调用方提供的时间窗独立核对两端实测像编号、判定测量冲突与区域越界，并把全部通过的窗口编译成接收方仅凭文档即可离线重建的有向路线。全程精确整数/有理数算术，不展开轨迹、不按重复次数逐轮推进、不扫描到首个越界步，也不为每个窗口重扫整张结点表。输入错误抛 `ValueError`，无部分结果、不修改调用方数据；测量冲突与越界是逐窗业务结果，互不影响。
+
+## 轨迹格式
+
+`trajectory = {"root": 根ID, "nodes": [结点...]}`。包内位点以 `(cell, point)` 标识，包基底下的规范分数坐标为该点记录的 `position`（记作 p）；轨迹状态另带不取模整数三元组像编号 r，实际分数坐标为 p+r。结点有三种：
+
+- `{"id", "kind":"step", "link", "cell"}`：单跳，引用一条完整连接实例 `(link, cell)`。执行时从实例 `from` 位点到 `to` 位点，并把实例的 `winding` 加到 r。平行边不去重、不允许反向代用、不按最短距离重算绕行。
+- `{"id", "kind":"sequence", "left", "right"}`：先左后右；左结点终点与右结点起点必须是同一包内位点身份（cell 与 point 均相同），否则拒绝整份轨迹。
+- `{"id", "kind":"repeat", "child", "count"}`：连续执行 child 共 count 次，count 为 ≥2 的 JSON 整数（布尔拒绝）。要求 child 起止的包内位点身份相同，不要求净绕行为零。
+
+结点 ID 遵循仓库 ID 规则且在结点表内唯一；定义无顺序、引用可向前；所有结点必须从根可达，不得有环（含自环）。上限：结点 ≤5000、根到叶路径结点数 ≤48、根实际步数 ≤10¹⁸，超限拒绝不截断；即使分支不在任何申请窗口内也完整校验。根不指定绝对起始像编号。
+
+## 窗口输入
+
+1..2000 个不同 ID 的窗口，每窗 `{"id", "l", "r", "left_image", "right_image", "region"}`：
+
+- `l,r` 为根轨迹步号，JSON 整数，满足 0 ≤ l < r ≤ 总步数；步号 0 在第一跳前，步号 j 是走完第 j 跳后的状态。
+- `left_image/right_image` 为该两步的实测像编号，三个 JSON 整数（布尔拒绝），每分量绝对值 ≤10⁶⁰，可为负。各窗测量独立，共享步号不要求相同像编号。
+- `region` 为包基底下三轴闭区间 `[[lo,hi],...]`，端点为规范整数或有理数字符串（如 "0"、"-3/2"），不用浮点、无容差，lo ≤ hi。
+
+## 判定顺序（逐窗独立）
+
+1. **定位核对**：以左端实测像为该窗绝对起点，按轨迹压缩算术推得右端像。与右端实测不符即 `measurement_conflict`，回传 `measured_left/measured_right/derived_right`；不检查出界、不交接，绝不丢弃任一实测值后照常交接。
+2. **区域判定**：两端相符后，对闭区间 [l,r] 内**所有步后状态**（含两端）做精确判定，实际坐标为该状态包内位点的 position 加绝对像编号。越界回 `out_of_region` 及**最早**越界状态的根轨迹步号 `step`、包内位点身份（cell/point/position）、实际像编号 `image` 与精确实际坐标 `coordinate`；不交付越界前缀。相同路线与净绕行换一对仍自洽的定位测量，可改变交接决定。
+3. **交接**：全窗通过才为 `handoff`。路线从第 l 步校准状态出发，恰好执行第 l+1..r 跳，保留次序、原始连接实例与绕行，可推回右端状态。
+
+## 交接文档（format: orbit-handoff/1）
+
+顶层含 `format`、原结构 `version`、包 `basis`、`total_steps` 与按窗口 ID 排序的 `windows`（每项含 id/l/r 与状态及上述业务字段）。存在可交接窗口时另含 `handoff`，否则该键缺省（无路线数据）：
+
+- `definitions`：跨窗共享、内容寻址（sha256 派生 ID）的压缩定义表，仅含获准路线实际需要的定义，按 ID 排序。三类：`hop`（引用 `(link, cell)` 实例）、`sequence`（left/right 两个定义 ID）、`repeat`（child 定义 ID 与整数 count，count ≥1）。不允许附上原轨迹未交接部分再让接收方跳过；窗口切片以共享子程序的部分定义表达，原结点子程序可跨窗复用而不按窗口份数复制。
+- `links`：定义引用到的全部连接实例，含 `(link, cell)` 身份、两端身份与包内规范坐标 `position`、整向量 `winding`，按 `(link, cell)` 排序；同端点平行边各自保留。
+- `routes`：按窗口 ID 排序，每条含原窗口步号 `l/r`、跳数 `hops`、根程序 ID `program`、起始位点身份与起始像编号 `image`、右端位点身份与右端像编号 `end_image`。
+
+文档自包含：重建路线不需要原包、原轨迹或进程缓存。`rebuild_handoff(document)` 校验文档格式、引用闭包（所有定义从路线可达、无悬空或重复定义、hop 均有链接记录），返回的对象提供 `route_ids()`、`state_at(window_id, step)`（O(定义树深) 的状态查询）、`end_state(window_id)` 与惰性 `iter_hops(window_id)`（按序产出每跳的实例、winding 与两端绝对像编号，重复以计数展开、不预物化）。重建得到的末状态与文档 `end_image` 不一致时抛 `ValueError`。
+
+正常结果可经 JSON 往返；仅重排包内记录、结点定义或窗口输入不改变输出。单窗定位与判定的工作量受图深与整数位长约束，不随总步数或重复轮数增长；交接数据规模同理。
+
 # 本地语料发行与同源证据
 
 `Corpus(path)` 打开（必要时创建）一个本地语料库文件，调用方持有路径，进程退出后可用同一路径重新打开。接口全部走 `ValueError` 子类 `CorpusError`；分折冲突另抛其子类 `FoldConflict`，异常属性 `conflicts` 给出冲突详情。布尔值不当作整数或 ID 接受。单写者语义：同一写入者进程内串行调用即可，不提供网络或多进程合并。
