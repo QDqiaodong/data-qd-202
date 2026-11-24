@@ -1,5 +1,6 @@
 from .model import parse
 from .expand import expand
+from .recover import recover_asymmetric_unit
 
 def process(data):
     operations,sites=parse(data);positions,orbits,composition=expand(operations,sites)

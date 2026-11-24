@@ -12,6 +12,38 @@ sites为1..200个唯一id，含species ASCII标记、point三个有理坐标、o
 
 输入严格字段校验；错误抛ValueError，无部分结果。io.publish只创建目标文件，已有目标和链接均不覆盖。固定example调用API，无通用CLI产品。
 
+# 完整位点的仿射对称恢复与非对称单元压缩
+
+`recover_asymmetric_unit(sites, metric, candidate_matrices)` 面向已经给出参考晶胞内完整周期位点、但缺少可靠仿射平移和非对称单元的整理场景。它不按坐标丢弃来源记录，也不把完整清单直接交给会再次展开的 `process`；相反，它先恢复所有位点装饰对称，再只保留每个仿射轨道的规范代表坐标上的原始记录。返回值为 `{"format":"asymmetric-unit/1","operations":[...],"sites":[...],"source_map":[...]}`，其中 `operations` 与 `sites` 可直接组成 `process` 输入。全部计算使用 Python 标准库精确有理数和整数算术，不用浮点容差。
+
+## 恢复输入
+
+- `sites` 是完整周期位点数组，沿用 `process` 的 `id/species/point/occupancy` 字段、ID 规则、1..200 上限、分数边界、正占位和 `occupancy<=1` 校验。坐标模 1 规范化，等价分数写法不影响结果。同一坐标允许多条不同 ID、物种或同物种占位拆分记录；先按物种合计占位，再检查该坐标所有物种总占位不得超过 1。
+- `metric` 是分数坐标基底下的 3×3 精确有理 Gram 矩阵；每个元素都是 `[分子,分母]`，沿用仓库分子 ±100000、分母 1..100000 的边界。矩阵必须元素结构合法、精确对称且用 Sylvester 顺序主子式判据精确正定；非法、非对称或非正定矩阵拒绝整次调用。
+- `candidate_matrices` 是 1..24 个互不相同的 3×3 整数矩阵，元素必须在 -2..2，且满足现有操作矩阵的 `abs(det)=1` 契约。列表必须含单位矩阵，并对矩阵乘法封闭。每个矩阵还必须精确满足 `Mᵀ metric M = metric`；任一不满足都拒绝整次调用。该参数就是搜索的完整线性点群，函数不推断空间群或点群。某个合法候选矩阵不能扩展成保持位点装饰的仿射操作不是输入错误，只是该矩阵不产生操作。
+
+## 平移搜索与操作输出
+
+仿射变换遵循仓库约定 `x -> Mx + t (mod 1)`。取规范坐标字典序最小的装饰坐标为锚点；任何对称都必须把锚点映到装饰完全相同的某个坐标 `q`，因此平移唯一为 `t=q-Mp_anchor (mod 1)`。对这些有限候选逐个验证全部坐标：像坐标必须存在，且其“物种→该物种精确合计占位”映射与原坐标逐项相同；只匹配总组成、单个锚点或来源 ID 不够。来源 ID 不参与对称判定。
+
+`operations` 使用现有 `{"id","matrix","translation"}` 格式，列出搜索范围内全部且仅有的装饰仿射对称，包含恒等操作并自动满足仿射群闭包。操作按行优先展开的矩阵元组、再按规范化 `Fraction` 平移字典序排序。恒等操作 ID 固定为 `"identity"`；其余操作按排序后遇到的非恒等操作顺序分配稳定 ID `"op-1"`、`"op-2"`……。平移输出为三个约分 `[分子,正分母]` 对。恢复结果超过 `process` 允许的 24 个操作，或派生平移无法满足现有 `process` 精确分数边界时，抛 `ValueError`，不返回部分结果。
+
+## 非对称单元与来源映射
+
+- 用全部恢复操作对规范装饰坐标取轨道。每轨道选模 1 规范坐标字典序最小者为代表。
+- `sites` 只包含恰好位于代表坐标上的全部原始记录，按 `(代表坐标, id)` 排序；保留原 ID、物种和占位值（包括调用方使用的等价分数对写法），规范输出 `point`。不合成来源、不按坐标去重来源、不把稳定子大小当作占位倍数。
+- `source_map` 按 site ID 排序，每个输入 ID 恰好一条。规范字段为 `id/species/occupancy/original_point/representative_point/operation_id`；所有坐标都是三个 `[分子,正分母]` 对且已模 1 规范化。为兼容常见命名，每条记录还冗余给出同值别名 `site/site_id/source_id/source`、`point/coordinate/original/normalized_point/normalized_coordinate`、`representative/representative_coordinate` 和 `operation/op_id`。指定操作按输出操作顺序取第一个满足“代表坐标经该操作映到本来源原坐标”的操作，即使有稳定子或多个平移也不歧义。
+
+把返回的 `operations` 和 `sites` 交给 `process`，所得逐点按物种合计占位、总占位/空位和晶胞组成，必须与原始完整 `sites` 仅在恒等操作下展开的结果精确相同。仅重排输入位点或候选矩阵不改变结果；返回对象只含 JSON 类型，可经 `json.dumps/json.loads` 往返，往返后的操作和位点仍可直接交给 `process`。非法输入、闭包/度量校验失败或无法满足下游上限均抛 `ValueError`；函数不修改调用方输入。
+
+离线示例：
+
+```sh
+PYTHONPATH=src python3 examples/run_recover.py
+```
+
+自动测试见 `tests/test_recover.py`，覆盖题述 16 操作场景、物种不同阻止合并、同聚合向量但拆分不同的来源追溯、度量拒绝、仅锚点匹配拒绝、闭包/排序/JSON 往返、逐点物种等价和 24 操作上限。
+
 # 占位区间草稿与确值结构交付
 
 solve_draft(data, delivery=None) 在 process 的操作/位点语义之上处理占位区间草稿：求出全晶胞约束下每条来源的精确单位范围；给出 delivery 分组请求时，判定能否交付一份可直接传给 process 的确值结构。全部离线、精确整数算术，不枚举可行分配，处理量不随刻度 K 的数值铺开。输入错误抛 ValueError；不修改调用方传入的数据。
