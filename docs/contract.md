@@ -71,6 +71,36 @@ build_supercell_shard(data, basis, links, cells) 在 process 的原胞展开语�
 - finalize=True 只允许在覆盖基底行列式所代表的全部互异胞片且没有未配边界记录时返回完整周期结构，否则 ValueError；能拼出开放分片不等于能交付完整周期结构。
 - 处理量与包大小不随未选中的胞片数或平行六面体的外接整数盒增长。
 
+# 周期结构整组抽取与作业交付
+
+extract_supercell_groups(package, repeats, requests, reserves=None, quota=None) 在 finalize 验收的超胞包之上，把包沿基底三个方向重复 nx×ny×nz 次，按请求点所属的连通组整组判定保留与额度、整组交付本次作业的仿真输入。全程离线、精确整数/有理数算术；不展开重复网格，不扫描无请求的连通组，不靠遍历超额组判断同组；只有确定交付的组才枚举其位点与连接（数量受额度约束），处理量不随重复网格体积或超额组体量增长。输入错误抛 ValueError，不修改调用方数据；正常的保留与额度不足是业务结果而非错误。
+
+## 输入
+
+- package：supercell-shard/1 超胞包，必须能通过 assemble_supercell_shards(..., finalize=True) 验收（覆盖齐全、无未配边界记录）；开放分片、缺覆盖包、篡改包、非法字段同样拒绝。包内记录顺序不计。
+- repeats：[nx, ny, nz] 三个方向重复次数，各为 1..10⁹ 整数（布尔拒绝）。包内点（胞片代表 cell、原胞展开点坐标 point）加各分量落在 [0, n) 的重复像编号 replica 标识一个实际位点；replica 与 cell 不混用。
+- requests：1..10000 条请求的非空数组，按首次出现顺序决定各组交付资格。每条 {"id", "cell", "point", "replica"}：id 遵循既有 ID 规则且列表内唯一；cell+point 必须引用包中已有的点（point 为包中规范有理数字符串）；replica 各分量为 [0, n) 整数。多条请求可指向同一实际位点。
+- reserves：可选数组（缺省为空），0..10000 条保留标记，格式同请求；id 列表内唯一（与请求列表各自计数，可重名）；无顺序，重排不改变结果。
+- quota：本次作业可接收的实际位点总数上限，整数 1..10000。
+
+## 连通与归组
+
+对包中每条完整有向连接，从任一重复像 r 出发有一条指向 (r+winding) mod n（逐分量取模）的边；连通组按无向可达定义，交付仍保留原方向、平行边与自环；连接只取包中声明，不按距离、物种或占位推断。同组的请求归并到结果的同一项（项按请求首次出现顺序排列），后续同组请求不再分配额度；即使该组最终不交付，也正确归组。
+
+## 逐组判定（按请求首次出现顺序）
+
+1. 组内任一实际位点带保留标记：status="reserved"，reserves 给出组内全部保留标记 ID（升序）；不输出位点或连接，不扣额度；即使组原本超额也以保留为准。标记不需要出现在请求列表里；同一包内点的某个重复像被标记不代表其所有重复像都被标记。
+2. 否则仅当整组互异实际位点数不超过剩余额度时交付：status="delivered"，按实际位点数扣额度；不够则 status="quota_exceeded"，不输出部分组、不占额度，继续处理后面的组；未交付组不给出精确体量。
+
+## 交付结果（format: supercell-extract/1）
+
+顶层含 format、version（原结构版本）、basis（包基底）、repeats、groups。每个交付组自包含、可脱离原包读取：requests（组内请求 ID，按请求顺序）、status="delivered"、version、basis、repeats，以及：
+
+- sites：组内全部实际位点，按 (cell, point, replica) 升序。每项含 cell/point/replica 身份、position=（包中 position + replica）逐分量除以重复次数的规范分数坐标（精确分数字符串），以及沿用原包的 occupancy/vacancy/contributions。
+- links：组内全部连接实例，按 (link, cell, replica) 升序。实例身份为包内实例（连接 ID link、起点胞片代表 cell）加起点重复像 replica；from/to 为两个实际端点（cell+point+replica）；winding 为重复后基底中的整向量绕行量，满足 终点规范坐标 + winding − 起点规范坐标 = 包中原有向位移逐分量除以重复次数；不由最短距离猜测。取模后两端相同的边不合并。
+
+保留组含 requests/status/reserves；超额组含 requests/status。结果可经 JSON 往返；包内记录与保留标记重排不改变结果，请求顺序具有业务含义。
+
 # 本地语料发行与同源证据
 
 `Corpus(path)` 打开（必要时创建）一个本地语料库文件，调用方持有路径，进程退出后可用同一路径重新打开。接口全部走 `ValueError` 子类 `CorpusError`；分折冲突另抛其子类 `FoldConflict`，异常属性 `conflicts` 给出冲突详情。布尔值不当作整数或 ID 接受。单写者语义：同一写入者进程内串行调用即可，不提供网络或多进程合并。
